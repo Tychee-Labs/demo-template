@@ -158,9 +158,7 @@ export function TycheeProvider({ children }: TycheeProviderProps) {
 
         // Initialize SDK with external signer
         try {
-            console.log('[SDK] Importing @tychee/sdk...');
             const { TycheeSDK } = await import('@tychee/sdk');
-            console.log('[SDK] TycheeSDK imported:', TycheeSDK);
 
             const config = {
                 stellarNetwork: (process.env.NEXT_PUBLIC_STELLAR_NETWORK || 'testnet') as 'testnet' | 'mainnet',
@@ -169,18 +167,13 @@ export function TycheeProvider({ children }: TycheeProviderProps) {
                 tokenVaultAddress: process.env.NEXT_PUBLIC_TOKEN_VAULT_ADDRESS || '',
                 useAccountAbstraction: process.env.NEXT_PUBLIC_USE_ACCOUNT_ABSTRACTION === 'true',
             };
-            console.log('[SDK] Config:', config);
 
             sdkInstance = new TycheeSDK(config);
-            console.log('[SDK] Instance created:', sdkInstance);
-            console.log('[SDK] initializeWithSigner method exists:', typeof sdkInstance.initializeWithSigner);
-
             await sdkInstance.initializeWithSigner(address, externalSigner, messageSigner);
-            console.log('[SDK] initializeWithSigner completed successfully!');
             setSdkReady(true);
             return true;
         } catch (sdkError) {
-            console.error('[SDK] Error initializing SDK:', sdkError);
+            console.error('Could not initialize SDK with signer:', sdkError);
             setSdkReady(false);
             return false;
         }
