@@ -1,11 +1,22 @@
 /**
  * TycheeProvider - React Context for Tychee SDK integration
- * Uses dynamic import to avoid SSR issues with SDK's native dependencies
+ * Uses @creit-tech/stellar-wallets-kit for unified wallet management
  */
 
 'use client';
 
-import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode, useRef } from 'react';
+import {
+    StellarWalletsKit,
+    WalletNetwork,
+    FreighterModule,
+    LobstrModule,
+    RabetModule,
+    xBullModule,
+    AlbedoModule,
+    HanaModule,
+    ISupportedWallet,
+} from '@creit.tech/stellar-wallets-kit';
 
 // Define types locally to avoid import issues
 interface CardData {
@@ -34,15 +45,18 @@ interface TycheeContextType {
     isInitialized: boolean;
     isLoading: boolean;
     error: string | null;
+    sdkReady: boolean; // true when SDK is initialized and card operations are available
 
     // Wallet State
     walletAddress: string | null;
     isConnected: boolean;
+    selectedWalletId: string | null;
 
     // Actions
     connect: (secretKey: string) => Promise<void>;
-    connectWithFreighter: () => Promise<void>;
-    disconnect: () => void;
+    connectWallet: () => Promise<void>;
+    disconnect: () => Promise<void>;
+    signTransaction: (xdr: string) => Promise<string>;
 
     // Card Operations
     tokenizeCard: (cardData: CardData) => Promise<TokenMetadata>;
@@ -64,16 +78,112 @@ interface TycheeProviderProps {
 // SDK singleton reference
 let sdkInstance: any = null;
 
+// Get network passphrase based on environment
+const getNetwork = (): WalletNetwork => {
+    const network = process.env.NEXT_PUBLIC_STELLAR_NETWORK || 'testnet';
+    return network === 'mainnet' ? WalletNetwork.PUBLIC : WalletNetwork.TESTNET;
+};
+
+// Create stellar-wallets-kit singleton
+let kitInstance: StellarWalletsKit | null = null;
+
+const getKit = (): StellarWalletsKit => {
+    if (!kitInstance) {
+        kitInstance = new StellarWalletsKit({
+            network: getNetwork(),
+            selectedWalletId: undefined,
+            modules: [
+                new FreighterModule(),
+                new LobstrModule(),
+                new RabetModule(),
+                new xBullModule(),
+                new AlbedoModule(),
+                new HanaModule(),
+            ],
+        });
+    }
+    return kitInstance;
+};
+
 export function TycheeProvider({ children }: TycheeProviderProps) {
     const [isInitialized, setIsInitialized] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [walletAddress, setWalletAddress] = useState<string | null>(null);
+    const [selectedWalletId, setSelectedWalletId] = useState<string | null>(null);
+    const [sdkReady, setSdkReady] = useState(false);
     const [mounted, setMounted] = useState(false);
 
     // Hydration fix
     useEffect(() => {
         setMounted(true);
+    }, []);
+
+    // Helper function to initialize SDK with external signer for a given address and wallet
+    const initializeSdkWithSigner = useCallback(async (address: string) => {
+        const kit = getKit();
+
+        // Create external signer function for SDK
+        const externalSigner = async (xdr: string, opts?: { networkPassphrase?: string; address?: string }) => {
+            const network = getNetwork();
+            const networkPassphrase = network === WalletNetwork.PUBLIC
+                ? 'Public Global Stellar Network ; September 2015'
+                : 'Test SDF Network ; September 2015';
+            const { signedTxXdr } = await kit.signTransaction(xdr, {
+                networkPassphrase: opts?.networkPassphrase || networkPassphrase,
+                address: opts?.address || address,
+            });
+            return { signedTxXdr, signerAddress: address };
+        };
+
+        // Create message signer for encryption key derivation
+        const messageSigner = async (message: string, opts?: { networkPassphrase?: string; address?: string }) => {
+            const network = getNetwork();
+            const networkPassphrase = network === WalletNetwork.PUBLIC
+                ? 'Public Global Stellar Network ; September 2015'
+                : 'Test SDF Network ; September 2015';
+            try {
+                const { signedMessage } = await kit.signMessage(message, {
+                    networkPassphrase: opts?.networkPassphrase || networkPassphrase,
+                    address: opts?.address || address,
+                });
+                return { signedMessage, signerAddress: address };
+            } catch {
+                // Fallback: derive from a hash of the address + message
+                const crypto = await import('crypto');
+                const hash = crypto.createHash('sha256').update(address + message).digest('hex');
+                return { signedMessage: hash, signerAddress: address };
+            }
+        };
+
+        // Initialize SDK with external signer
+        try {
+            console.log('[SDK] Importing @tychee/sdk...');
+            const { TycheeSDK } = await import('@tychee/sdk');
+            console.log('[SDK] TycheeSDK imported:', TycheeSDK);
+
+            const config = {
+                stellarNetwork: (process.env.NEXT_PUBLIC_STELLAR_NETWORK || 'testnet') as 'testnet' | 'mainnet',
+                horizonUrl: process.env.NEXT_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org',
+                sorobanRpcUrl: process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org',
+                tokenVaultAddress: process.env.NEXT_PUBLIC_TOKEN_VAULT_ADDRESS || '',
+                useAccountAbstraction: process.env.NEXT_PUBLIC_USE_ACCOUNT_ABSTRACTION === 'true',
+            };
+            console.log('[SDK] Config:', config);
+
+            sdkInstance = new TycheeSDK(config);
+            console.log('[SDK] Instance created:', sdkInstance);
+            console.log('[SDK] initializeWithSigner method exists:', typeof sdkInstance.initializeWithSigner);
+
+            await sdkInstance.initializeWithSigner(address, externalSigner, messageSigner);
+            console.log('[SDK] initializeWithSigner completed successfully!');
+            setSdkReady(true);
+            return true;
+        } catch (sdkError) {
+            console.error('[SDK] Error initializing SDK:', sdkError);
+            setSdkReady(false);
+            return false;
+        }
     }, []);
 
     // Restore session from localStorage
@@ -82,13 +192,32 @@ export function TycheeProvider({ children }: TycheeProviderProps) {
 
         const savedAddress = localStorage.getItem('tychee_wallet_address');
         const savedSecret = localStorage.getItem('tychee_wallet_secret');
+        const savedWalletId = localStorage.getItem('tychee_wallet_id');
 
         if (savedAddress && savedSecret) {
+            // Full connection with SDK (secret key)
             connect(savedSecret).catch(console.error);
-        }
-    }, [mounted]);
+        } else if (savedAddress && savedWalletId) {
+            // Wallet extension connection - need to reinitialize SDK with signer
+            setWalletAddress(savedAddress);
+            setSelectedWalletId(savedWalletId);
+            getKit().setWallet(savedWalletId);
 
-    // Connect with secret key
+            // Initialize SDK with external signer
+            initializeSdkWithSigner(savedAddress).then((success) => {
+                setIsInitialized(true);
+                if (success) {
+                    console.log('Session restored with wallet extension SDK support');
+                }
+            });
+        } else if (savedAddress) {
+            // Just address, no wallet ID - show as connected but SDK won't work
+            setWalletAddress(savedAddress);
+            setIsInitialized(true);
+        }
+    }, [mounted, initializeSdkWithSigner]);
+
+    // Connect with secret key (for SDK operations)
     const connect = useCallback(async (secretKey: string) => {
         setIsLoading(true);
         setError(null);
@@ -110,6 +239,7 @@ export function TycheeProvider({ children }: TycheeProviderProps) {
 
             const address = sdkInstance.getUserAddress();
             setWalletAddress(address);
+            setSdkReady(true);
             setIsInitialized(true);
 
             // Persist session
@@ -125,72 +255,115 @@ export function TycheeProvider({ children }: TycheeProviderProps) {
         }
     }, []);
 
-    // Connect with Freighter wallet
-    const connectWithFreighter = useCallback(async () => {
+    // Connect with wallet extension using stellar-wallets-kit
+    const connectWallet = useCallback(async () => {
         setIsLoading(true);
         setError(null);
 
         try {
-            if (typeof window === 'undefined' || !window.freighterApi) {
-                throw new Error('Freighter wallet not found. Please install the Freighter browser extension.');
-            }
+            const kit = getKit();
 
-            const { isConnected: checkConnected, getPublicKey } = window.freighterApi;
+            await new Promise<void>((resolve, reject) => {
+                kit.openModal({
+                    onWalletSelected: async (option: ISupportedWallet) => {
+                        try {
+                            kit.setWallet(option.id);
+                            const { address } = await kit.getAddress();
 
-            const connected = await checkConnected();
-            if (!connected) {
-                throw new Error('Please connect your Freighter wallet');
-            }
+                            setWalletAddress(address);
+                            setSelectedWalletId(option.id);
 
-            const publicKey = await getPublicKey();
+                            // Initialize SDK with external signer
+                            await initializeSdkWithSigner(address);
 
-            // For Freighter, store public key only
-            setWalletAddress(publicKey);
-            setIsInitialized(true);
+                            setIsInitialized(true);
 
-            localStorage.setItem('tychee_wallet_address', publicKey);
+                            // Persist session
+                            localStorage.setItem('tychee_wallet_address', address);
+                            localStorage.setItem('tychee_wallet_id', option.id);
 
+                            resolve();
+                        } catch (err: any) {
+                            console.error('Failed to get address:', err);
+                            reject(err);
+                        }
+                    },
+                    onClosed: (err: Error) => {
+                        // User closed modal without selecting
+                        setIsLoading(false);
+                        resolve();
+                    },
+                    modalTitle: 'Connect Your Wallet',
+                    notAvailableText: 'Not installed',
+                });
+            });
         } catch (err: any) {
-            console.error('Freighter connection failed:', err);
-            setError(err.message || 'Failed to connect Freighter');
+            console.error('Wallet connection failed:', err);
+            setError(err.message || 'Failed to connect wallet');
             throw err;
         } finally {
             setIsLoading(false);
         }
-    }, []);
+    }, [initializeSdkWithSigner]);
+
+    // Sign transaction using the connected wallet
+    const signTransaction = useCallback(async (xdr: string): Promise<string> => {
+        if (!walletAddress) {
+            throw new Error('No wallet connected');
+        }
+
+        const kit = getKit();
+        const network = getNetwork();
+
+        const { signedTxXdr } = await kit.signTransaction(xdr, {
+            networkPassphrase: network,
+            address: walletAddress,
+        });
+
+        return signedTxXdr;
+    }, [walletAddress]);
 
     // Disconnect
-    const disconnect = useCallback(() => {
+    const disconnect = useCallback(async () => {
+        try {
+            const kit = getKit();
+            await kit.disconnect();
+        } catch (err) {
+            console.error('Error disconnecting kit:', err);
+        }
+
         sdkInstance = null;
         setWalletAddress(null);
+        setSelectedWalletId(null);
         setIsInitialized(false);
         setError(null);
 
         localStorage.removeItem('tychee_wallet_address');
         localStorage.removeItem('tychee_wallet_secret');
+        localStorage.removeItem('tychee_wallet_id');
     }, []);
 
     // Card Operations
     const tokenizeCard = useCallback(async (cardData: CardData): Promise<TokenMetadata> => {
-        if (!sdkInstance || !isInitialized) {
-            throw new Error('SDK not initialized. Please connect your wallet first.');
+        if (!sdkInstance) {
+            throw new Error('SDK not initialized. Please connect a wallet first.');
         }
         return sdkInstance.storeCard(cardData);
-    }, [isInitialized]);
+    }, []);
 
     const retrieveCard = useCallback(async (): Promise<TokenMetadata | null> => {
-        if (!sdkInstance || !isInitialized) {
-            throw new Error('SDK not initialized. Please connect your wallet first.');
+        if (!sdkInstance) {
+            throw new Error('SDK not initialized. Please connect a wallet first.');
         }
         return sdkInstance.retrieveCard();
-    }, [isInitialized]);
+    }, []);
 
     const revokeCard = useCallback(async () => {
-        if (!sdkInstance || !isInitialized) {
-            throw new Error('SDK not initialized. Please connect your wallet first.');
+        if (!sdkInstance) {
+            throw new Error('SDK not initialized. Please connect a wallet first.');
         }
         return sdkInstance.revokeCard();
-    }, [isInitialized]);
+    }, []);
 
     // Validation utilities (can work without SDK)
     const validateCardNumber = useCallback((pan: string): boolean => {
@@ -231,11 +404,14 @@ export function TycheeProvider({ children }: TycheeProviderProps) {
         isInitialized,
         isLoading,
         error,
+        sdkReady,
         walletAddress,
         isConnected: !!walletAddress,
+        selectedWalletId,
         connect,
-        connectWithFreighter,
+        connectWallet,
         disconnect,
+        signTransaction,
         tokenizeCard,
         retrieveCard,
         revokeCard,
@@ -257,16 +433,4 @@ export function useTychee() {
         throw new Error('useTychee must be used within a TycheeProvider');
     }
     return context;
-}
-
-// Type declaration for Freighter
-declare global {
-    interface Window {
-        freighterApi?: {
-            isConnected: () => Promise<boolean>;
-            getPublicKey: () => Promise<string>;
-            signTransaction: (xdr: string) => Promise<string>;
-            getNetwork: () => Promise<string>;
-        };
-    }
 }

@@ -22,7 +22,7 @@ interface StoredCard {
 }
 
 export default function CardsPage() {
-    const { isConnected, walletAddress, tokenizeCard, retrieveCard, revokeCard, validateCardNumber, isLoading: sdkLoading } = useTychee();
+    const { isConnected, walletAddress, sdkReady, tokenizeCard, retrieveCard, revokeCard, validateCardNumber, isLoading: sdkLoading } = useTychee();
     const [cards, setCards] = useState<StoredCard[]>([]);
     const [showAddCard, setShowAddCard] = useState(false);
     const [isTokenizing, setIsTokenizing] = useState(false);
@@ -35,12 +35,12 @@ export default function CardsPage() {
     const [cvv, setCvv] = useState('');
     const [cardholderName, setCardholderName] = useState('');
 
-    // Fetch stored card on mount
+    // Fetch stored card when SDK is ready (not just when connected)
     useEffect(() => {
-        if (isConnected) {
+        if (sdkReady) {
             fetchCard();
         }
-    }, [isConnected]);
+    }, [sdkReady]);
 
     const fetchCard = async () => {
         try {
@@ -50,8 +50,10 @@ export default function CardsPage() {
             } else {
                 setCards([]);
             }
-        } catch (err) {
-            console.error('Failed to fetch card:', err);
+        } catch (err: any) {
+            // Network/contract errors are expected when contract isn't deployed
+            console.warn('Could not fetch cards:', err.message || err);
+            setCards([]); // Just show empty state instead of error
         }
     };
 

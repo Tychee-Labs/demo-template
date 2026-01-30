@@ -7,11 +7,11 @@
 
 import Link from 'next/link';
 import { useTychee } from '@/lib/tychee-provider';
-import { CreditCard, Gift, Receipt, BarChart3, Wallet, LogOut, Loader2 } from 'lucide-react';
-import { useState } from 'react';
+import { CreditCard, Gift, Receipt, BarChart3, Wallet, LogOut, Loader2, Key } from 'lucide-react';
+import { useState, useEffect } from 'react';
 
 export function Navigation() {
-    const { walletAddress, isConnected, isLoading, connect, disconnect } = useTychee();
+    const { walletAddress, isConnected, isLoading, connect, connectWallet, disconnect } = useTychee();
     const [showConnectModal, setShowConnectModal] = useState(false);
     const [secretKey, setSecretKey] = useState('');
     const [connecting, setConnecting] = useState(false);
@@ -37,27 +37,60 @@ export function Navigation() {
         }
     };
 
+    const handleWalletConnect = async () => {
+        setConnecting(true);
+        setError('');
+        setShowConnectModal(false);
+
+        try {
+            await connectWallet();
+        } catch (err: any) {
+            console.error('Wallet connection error:', err);
+            setError(err.message || 'Failed to connect wallet extension');
+            setShowConnectModal(true);
+        } finally {
+            setConnecting(false);
+        }
+    };
+
     const handleGenerateDemo = async () => {
         setConnecting(true);
         setError('');
 
         try {
-            // Import Stellar SDK to generate keypair
+            // Import Stellar SDK dynamically
+            console.log('Importing Stellar SDK...');
             const StellarSdk = await import('@stellar/stellar-sdk');
+            console.log('SDK imported, generating keypair...');
+
             const keypair = StellarSdk.Keypair.random();
             const secret = keypair.secret();
+            const publicKey = keypair.publicKey();
+
+            console.log('Keypair generated:', publicKey);
 
             // Fund with Friendbot
-            const response = await fetch(`https://friendbot.stellar.org?addr=${keypair.publicKey()}`);
+            console.log('Funding testnet account...');
+            const response = await fetch(`https://friendbot.stellar.org?addr=${publicKey}`);
+
             if (!response.ok) {
-                throw new Error('Failed to fund testnet account');
+                const text = await response.text();
+                console.error('Friendbot error:', text);
+                throw new Error('Failed to fund testnet account. Please try again.');
             }
 
-            await connect(secret);
-            setShowConnectModal(false);
+            console.log('Account funded successfully!');
+
+            // Store wallet info
+            localStorage.setItem('tychee_wallet_address', publicKey);
+            localStorage.setItem('tychee_wallet_secret', secret);
+
+            // Reload to pick up the saved wallet
+            window.location.reload();
+
         } catch (err: any) {
+            console.error('Demo wallet error:', err);
             setError(err.message || 'Failed to create demo wallet');
-        } finally {
             setConnecting(false);
         }
     };
@@ -108,7 +141,7 @@ export function Navigation() {
                                         </span>
                                     </div>
                                     <button
-                                        onClick={disconnect}
+                                        onClick={() => disconnect()}
                                         className="flex items-center gap-2 px-3 py-1.5 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
                                     >
                                         <LogOut className="w-4 h-4" />
@@ -118,10 +151,10 @@ export function Navigation() {
                             ) : (
                                 <button
                                     onClick={() => setShowConnectModal(true)}
-                                    disabled={isLoading}
+                                    disabled={isLoading || connecting}
                                     className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white rounded-lg transition-all font-medium text-sm disabled:opacity-50"
                                 >
-                                    {isLoading ? (
+                                    {isLoading || connecting ? (
                                         <Loader2 className="w-4 h-4 animate-spin" />
                                     ) : (
                                         <Wallet className="w-4 h-4" />
@@ -140,7 +173,17 @@ export function Navigation() {
                     <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl">
                         <h2 className="text-xl font-semibold mb-4">Connect Wallet</h2>
 
-                        <div className="space-y-4">
+                        <div className="space-y-3">
+                            {/* Wallet Extension Option - Uses stellar-wallets-kit modal */}
+                            <button
+                                onClick={handleWalletConnect}
+                                disabled={connecting}
+                                className="w-full flex items-center justify-center gap-3 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors font-medium disabled:opacity-50"
+                            >
+                                <Wallet className="w-5 h-5 text-violet-400" />
+                                Connect Wallet Extension
+                            </button>
+
                             {/* Demo Account Option */}
                             <button
                                 onClick={handleGenerateDemo}
@@ -148,16 +191,19 @@ export function Navigation() {
                                 className="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white rounded-lg transition-all font-medium disabled:opacity-50"
                             >
                                 {connecting ? (
-                                    <Loader2 className="w-5 h-5 animate-spin" />
+                                    <>
+                                        <Loader2 className="w-5 h-5 animate-spin" />
+                                        Creating wallet...
+                                    </>
                                 ) : (
                                     <>
                                         <Wallet className="w-5 h-5" />
-                                        Generate Demo Wallet
+                                        Generate Demo Wallet (Testnet)
                                     </>
                                 )}
                             </button>
 
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 py-2">
                                 <div className="flex-1 h-px bg-gray-800" />
                                 <span className="text-gray-500 text-sm">or enter secret key</span>
                                 <div className="flex-1 h-px bg-gray-800" />
@@ -186,13 +232,18 @@ export function Navigation() {
                             <button
                                 onClick={handleConnect}
                                 disabled={connecting || !secretKey.trim()}
-                                className="w-full py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors font-medium disabled:opacity-50 disabled:hover:bg-gray-800"
+                                className="w-full flex items-center justify-center gap-2 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors font-medium disabled:opacity-50 disabled:hover:bg-gray-800"
                             >
+                                <Key className="w-4 h-4" />
                                 Connect with Secret Key
                             </button>
 
                             <button
-                                onClick={() => setShowConnectModal(false)}
+                                onClick={() => {
+                                    setShowConnectModal(false);
+                                    setError('');
+                                    setSecretKey('');
+                                }}
                                 className="w-full py-2 text-gray-400 hover:text-white transition-colors text-sm"
                             >
                                 Cancel
