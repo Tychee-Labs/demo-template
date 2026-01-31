@@ -171,9 +171,10 @@ export function TycheeProvider({ children }: TycheeProviderProps) {
             sdkInstance = new TycheeSDK(config);
             await sdkInstance.initializeWithSigner(address, externalSigner, messageSigner);
             setSdkReady(true);
+            console.log('SDK initialized with wallet extension signer');
             return true;
         } catch (sdkError) {
-            console.error('Could not initialize SDK with signer:', sdkError);
+            console.warn('Could not initialize SDK with signer:', sdkError);
             setSdkReady(false);
             return false;
         }

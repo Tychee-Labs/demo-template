@@ -33,10 +33,6 @@ const nextConfig: NextConfig = {
   experimental: {
     esmExternals: 'loose',
   },
-
-  // Empty turbopack config to silence the warning about webpack-only config
-  // For builds, use: npm run build -- --webpack
-  turbopack: {},
 };
 
 export default nextConfig;
